@@ -9,6 +9,15 @@ const routes = require('./routes');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+// Ensure DB is initialized before any route (required for Vercel serverless; no-op after first call)
+app.use((req, res, next) => {
+  db.initialize()
+    .then(() => next())
+    .catch((err) => {
+      console.error('DB init failed', err);
+      res.status(503).json({ success: false, error: 'Service unavailable' });
+    });
+});
 // Security middlewares
 app.use(helmet());
 app.use(cors());

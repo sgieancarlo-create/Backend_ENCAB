@@ -3,15 +3,7 @@ const mysql = require('mysql2/promise');
 let pool;
 
 async function initialize() {
-  pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'enrollment',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-  });
+  if (pool) return; // already initialized (idempotent for serverless)
 
   // Users: login, register (email, username, first/middle/last, suffix, password, contact_no)
   const createUsers = `
