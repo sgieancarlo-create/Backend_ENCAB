@@ -5,6 +5,24 @@ let pool;
 async function initialize() {
   if (pool) return; // already initialized (idempotent for serverless)
 
+  const host = process.env.DB_HOST;
+  const useSsl = process.env.DB_SSL === '1' || process.env.DB_SSL === 'true' || String(host || '').includes('aivencloud');
+  const poolConfig = {
+    host,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: parseInt(process.env.DB_PORT, 10),
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    ...(useSsl && { ssl: { rejectUnauthorized: true } }),
+  };
+  if (useSsl && process.env.DB_SSL_CA) {
+    poolConfig.ssl.ca = process.env.DB_SSL_CA.replace(/\\n/g, '\n');
+  }
+  pool = mysql.createPool(poolConfig);
+
   // Users: login, register (email, username, first/middle/last, suffix, password, contact_no)
   const createUsers = `
   CREATE TABLE IF NOT EXISTS users (
