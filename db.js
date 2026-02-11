@@ -7,6 +7,9 @@ async function initialize() {
 
   const host = process.env.DB_HOST;
   const useSsl = process.env.DB_SSL === '1' || process.env.DB_SSL === 'true' || String(host || '').includes('aivencloud');
+  const hasCa = !!process.env.DB_SSL_CA;
+  // With CA: verify. Without CA (e.g. Aiven): allow self-signed so connection works
+  const rejectUnauthorized = hasCa;
   const poolConfig = {
     host,
     user: process.env.DB_USER,
@@ -16,9 +19,9 @@ async function initialize() {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    ...(useSsl && { ssl: { rejectUnauthorized: true } }),
+    ...(useSsl && { ssl: { rejectUnauthorized } }),
   };
-  if (useSsl && process.env.DB_SSL_CA) {
+  if (useSsl && hasCa) {
     poolConfig.ssl.ca = process.env.DB_SSL_CA.replace(/\\n/g, '\n');
   }
   pool = mysql.createPool(poolConfig);
