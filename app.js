@@ -28,6 +28,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 app.use('/api/', apiLimiter);
+app.get('/api', (req, res) => res.json({ ok: true, message: 'Enrollment API' }));
 app.use('/api', routes);
 
 module.exports = app;
