@@ -67,6 +67,7 @@ router.put('/enrollment/basic-info', authenticate, async (req, res) => {
       fatherName,
       guardianName,
       guardianContact,
+      studentType,
     } = req.body || {};
 
     if (!lastName || !firstName || !birthdate || !guardianName || !guardianContact) {
@@ -74,6 +75,40 @@ router.put('/enrollment/basic-info', authenticate, async (req, res) => {
         success: false,
         error: 'Missing required fields: lastName, firstName, birthdate, guardianName, guardianContact',
       });
+    }
+
+    const pool = db.getPool();
+
+    // Preserve existing studentType if not provided in this request
+    let existingStudentType = 'new';
+    try {
+      const [rows] = await pool.query(
+        'SELECT basic_info FROM enrollments WHERE user_id = ? LIMIT 1',
+        [userId]
+      );
+      const row = rows && rows[0];
+      if (row && row.basic_info) {
+        let bi = row.basic_info;
+        if (typeof bi === 'string') {
+          try {
+            bi = JSON.parse(bi);
+          } catch (e) {
+            bi = {};
+          }
+        }
+        const prevType = String(bi.studentType || '').trim().toLowerCase();
+        if (prevType === 'transferee') {
+          existingStudentType = 'transferee';
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to read existing basic_info for studentType', e.message || e);
+    }
+
+    let normalizedStudentType = existingStudentType;
+    if (typeof studentType === 'string') {
+      normalizedStudentType =
+        String(studentType).trim().toLowerCase() === 'transferee' ? 'transferee' : 'new';
     }
 
     const basicInfo = {
@@ -88,9 +123,10 @@ router.put('/enrollment/basic-info', authenticate, async (req, res) => {
       fatherName: fatherName != null ? String(fatherName).trim() : '',
       guardianName: String(guardianName).trim(),
       guardianContact: String(guardianContact).trim(),
+      // Enrollment type: 'new' (freshman) vs 'transferee'
+      studentType: normalizedStudentType,
     };
 
-    const pool = db.getPool();
     const jsonStr = JSON.stringify(basicInfo);
 
     await pool.query(
@@ -155,7 +191,7 @@ router.put('/enrollment/school-background', authenticate, async (req, res) => {
     const userId = req.user?.sub;
     if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-    const { elementary = [], juniorHigh = [], highSchool = [] } = req.body || {};
+    const { elementary = [], juniorHigh = [], highSchool = [], studentType } = req.body || {};
 
     const sanitizeRecords = (arr) => {
       if (!Array.isArray(arr)) return [];
@@ -164,6 +200,7 @@ router.put('/enrollment/school-background', authenticate, async (req, res) => {
         location: String(r?.location ?? '').trim(),
         yearFrom: String(r?.yearFrom ?? '').trim(),
         yearTo: String(r?.yearTo ?? '').trim(),
+        strand: String(r?.strand ?? '').trim(),
       }));
     };
 
@@ -174,13 +211,53 @@ router.put('/enrollment/school-background', authenticate, async (req, res) => {
     };
 
     const pool = db.getPool();
-    const jsonStr = JSON.stringify(school_background);
+    const sbJson = JSON.stringify(school_background);
 
-    await pool.query(
-      `INSERT INTO enrollments (id, user_id, status, school_background) VALUES (UUID(), ?, 'draft', ?)
-       ON DUPLICATE KEY UPDATE school_background = VALUES(school_background), updated_at = NOW()`,
-      [userId, jsonStr]
-    );
+    // Optionally update studentType inside basic_info when provided
+    let basicInfoJson = null;
+    if (typeof studentType === 'string') {
+      let currentBasic = {};
+      try {
+        const [rows] = await pool.query(
+          'SELECT basic_info FROM enrollments WHERE user_id = ? LIMIT 1',
+          [userId]
+        );
+        const row = rows && rows[0];
+        if (row && row.basic_info) {
+          currentBasic = row.basic_info;
+          if (typeof currentBasic === 'string') {
+            try {
+              currentBasic = JSON.parse(currentBasic);
+            } catch (e) {
+              currentBasic = {};
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to read existing basic_info for school-background', e.message || e);
+      }
+
+      const normalized =
+        String(studentType).trim().toLowerCase() === 'transferee' ? 'transferee' : 'new';
+      const merged = { ...currentBasic, studentType: normalized };
+      basicInfoJson = JSON.stringify(merged);
+    }
+
+    if (basicInfoJson != null) {
+      await pool.query(
+        `INSERT INTO enrollments (id, user_id, status, basic_info, school_background)
+         VALUES (UUID(), ?, 'draft', ?, ?)
+         ON DUPLICATE KEY UPDATE basic_info = VALUES(basic_info), school_background = VALUES(school_background), updated_at = NOW()`,
+        [userId, basicInfoJson, sbJson]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO enrollments (id, user_id, status, school_background)
+         VALUES (UUID(), ?, 'draft', ?)
+         ON DUPLICATE KEY UPDATE school_background = VALUES(school_background), updated_at = NOW()`,
+        [userId, sbJson]
+      );
+    }
 
     res.json({ success: true, data: { school_background } });
   } catch (err) {
