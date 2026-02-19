@@ -63,7 +63,7 @@ async function initialize() {
   );`;
   await pool.query(createResetTokens);
 
-  // Enrollments: basic info + school background
+  // Enrollments: basic info + school background; archived_at/school_year for archive feature
   const createEnrollments = `
   CREATE TABLE IF NOT EXISTS enrollments (
     id CHAR(36) PRIMARY KEY,
@@ -72,11 +72,24 @@ async function initialize() {
     basic_info JSON DEFAULT NULL,
     school_background JSON DEFAULT NULL,
     submitted_at DATETIME DEFAULT NULL,
+    archived_at DATETIME DEFAULT NULL,
+    school_year VARCHAR(20) DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY one_enrollment_per_user (user_id)
   );`;
   await pool.query(createEnrollments);
+  // Add archive columns if table already existed without them
+  try {
+    await pool.query('ALTER TABLE enrollments ADD COLUMN archived_at DATETIME DEFAULT NULL');
+  } catch (e) {
+    if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+  }
+  try {
+    await pool.query('ALTER TABLE enrollments ADD COLUMN school_year VARCHAR(20) DEFAULT NULL');
+  } catch (e) {
+    if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+  }
 
   // Documents (file uploads)
   const createDocs = `
