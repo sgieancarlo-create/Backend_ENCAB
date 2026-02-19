@@ -316,7 +316,8 @@ router.post('/documents/blob-upload', authenticate, async (req, res) => {
 
     const key = `documents/${userId}/${Date.now()}_${fileName}`;
     const blob = await put(key, buffer, {
-      access: 'private',
+      // Store uploads in a public Blob store so admin‑web can open the URL directly
+      access: 'public',
       contentType,
     });
 
