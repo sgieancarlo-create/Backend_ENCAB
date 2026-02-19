@@ -363,6 +363,7 @@ router.get('/admin/enrollments', authenticate, requireAdmin, async (req, res) =>
        u.email, u.username, u.first_name, u.last_name, u.middle_name, u.contact_no
        FROM enrollments e
        LEFT JOIN users u ON u.id = e.user_id
+       WHERE (e.archived_at IS NULL)
        ORDER BY e.submitted_at DESC, e.updated_at DESC`;
     const params = [];
     if (status) {
@@ -370,7 +371,7 @@ router.get('/admin/enrollments', authenticate, requireAdmin, async (req, res) =>
        u.email, u.username, u.first_name, u.last_name, u.middle_name, u.contact_no
        FROM enrollments e
        LEFT JOIN users u ON u.id = e.user_id
-       WHERE e.status = ?
+       WHERE (e.archived_at IS NULL) AND e.status = ?
        ORDER BY e.submitted_at DESC, e.updated_at DESC`;
       params.push(status);
     }
@@ -405,7 +406,7 @@ router.get('/admin/enrollments/:id', authenticate, requireAdmin, async (req, res
   try {
     const pool = db.getPool();
     const [rows] = await pool.query(
-      `SELECT e.id, e.user_id, e.status, e.basic_info, e.school_background, e.submitted_at, e.created_at, e.updated_at,
+      `SELECT e.id, e.user_id, e.status, e.basic_info, e.school_background, e.submitted_at, e.archived_at, e.school_year, e.created_at, e.updated_at,
        u.email, u.username, u.first_name, u.last_name, u.middle_name, u.contact_no, u.profile_picture_url
        FROM enrollments e
        LEFT JOIN users u ON u.id = e.user_id
@@ -437,6 +438,8 @@ router.get('/admin/enrollments/:id', authenticate, requireAdmin, async (req, res
         basic_info: basicInfo,
         school_background: schoolBackground || {},
         submitted_at: row.submitted_at,
+        archived_at: row.archived_at || null,
+        school_year: row.school_year || null,
         created_at: row.created_at,
         updated_at: row.updated_at,
       },
@@ -449,15 +452,108 @@ router.get('/admin/enrollments/:id', authenticate, requireAdmin, async (req, res
 
 router.patch('/admin/enrollments/:id/status', authenticate, requireAdmin, async (req, res) => {
   try {
+    const pool = db.getPool();
+    const [existing] = await pool.query('SELECT archived_at FROM enrollments WHERE id = ? LIMIT 1', [req.params.id]);
+    if (existing && existing[0] && existing[0].archived_at) {
+      return res.status(400).json({ success: false, error: 'Cannot update status: enrollment is archived (read-only).' });
+    }
     const { status } = req.body || {};
     const allowed = ['pending', 'approved', 'rejected', 'draft'];
     if (!status || !allowed.includes(status)) {
       return res.status(400).json({ success: false, error: 'status must be one of: ' + allowed.join(', ') });
     }
-    const pool = db.getPool();
     const [result] = await pool.query('UPDATE enrollments SET status = ?, updated_at = NOW() WHERE id = ?', [status, req.params.id]);
     if (result.affectedRows === 0) return res.status(404).json({ success: false, error: 'Enrollment not found' });
     res.json({ success: true, data: { status } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+// List distinct school years for archive tabs (must be before /admin/archived-enrollments/:id)
+router.get('/admin/archived-enrollments/school-years', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const pool = db.getPool();
+    const [rows] = await pool.query(
+      `SELECT DISTINCT school_year FROM enrollments WHERE archived_at IS NOT NULL AND school_year IS NOT NULL AND school_year != '' ORDER BY school_year DESC`
+    );
+    const years = (rows || []).map((r) => r.school_year);
+    res.json({ success: true, data: years });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+router.get('/admin/archived-enrollments', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const pool = db.getPool();
+    const schoolYear = req.query.school_year || '';
+    let sql = `SELECT e.id, e.user_id, e.status, e.basic_info, e.school_background, e.submitted_at, e.archived_at, e.school_year, e.created_at, e.updated_at,
+       u.email, u.username, u.first_name, u.last_name, u.middle_name, u.contact_no
+       FROM enrollments e
+       LEFT JOIN users u ON u.id = e.user_id
+       WHERE e.archived_at IS NOT NULL`;
+    const params = [];
+    if (schoolYear) {
+      sql += ' AND e.school_year = ?';
+      params.push(schoolYear);
+    }
+    sql += ' ORDER BY e.archived_at DESC, e.submitted_at DESC';
+    const [rows] = await pool.query(sql, params);
+    const list = (rows || []).map((row) => {
+      let basicInfo = row.basic_info;
+      if (typeof basicInfo === 'string') {
+        try { basicInfo = JSON.parse(basicInfo); } catch (e) { basicInfo = {}; }
+      }
+      const name = [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' ') || row.username || row.email;
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        status: row.status,
+        studentName: name,
+        email: row.email,
+        contact_no: row.contact_no,
+        submitted_at: row.submitted_at,
+        archived_at: row.archived_at,
+        school_year: row.school_year || null,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        basic_info: basicInfo,
+      };
+    });
+    res.json({ success: true, data: list });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+router.patch('/admin/enrollments/:id/archive', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { school_year } = req.body || {};
+    const sy = typeof school_year === 'string' ? school_year.trim() : '';
+    if (!sy) return res.status(400).json({ success: false, error: 'school_year is required (e.g. "2025-2026")' });
+    const pool = db.getPool();
+    const [result] = await pool.query(
+      'UPDATE enrollments SET archived_at = NOW(), school_year = ?, updated_at = NOW() WHERE id = ?',
+      [sy, req.params.id]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ success: false, error: 'Enrollment not found' });
+    res.json({ success: true, data: { archived_at: new Date().toISOString(), school_year: sy } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+router.delete('/admin/enrollments/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const pool = db.getPool();
+    const [result] = await pool.query('DELETE FROM enrollments WHERE id = ?', [req.params.id]);
+    if (result.affectedRows === 0) return res.status(404).json({ success: false, error: 'Enrollment not found' });
+    res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: String(err.message || err) });
@@ -479,7 +575,7 @@ router.get('/admin/stats', authenticate, requireAdmin, async (req, res) => {
   try {
     const pool = db.getPool();
     const [rows] = await pool.query(
-      'SELECT status, COUNT(*) as count FROM enrollments GROUP BY status'
+      'SELECT status, COUNT(*) as count FROM enrollments WHERE archived_at IS NULL GROUP BY status'
     );
     const stats = { total: 0, pending: 0, approved: 0, rejected: 0, draft: 0 };
     (rows || []).forEach((r) => {
@@ -492,7 +588,7 @@ router.get('/admin/stats', authenticate, requireAdmin, async (req, res) => {
     try {
       const [genderRows] = await pool.query(
         `SELECT LOWER(TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(basic_info, '$.gender')), ''))) AS g, COUNT(*) AS count
-         FROM enrollments WHERE basic_info IS NOT NULL GROUP BY g`
+         FROM enrollments WHERE archived_at IS NULL AND basic_info IS NOT NULL GROUP BY g`
       );
       (genderRows || []).forEach((r) => {
         const count = Number(r.count);
@@ -510,7 +606,7 @@ router.get('/admin/stats', authenticate, requireAdmin, async (req, res) => {
       const [dateRows] = await pool.query(
         `SELECT DATE(COALESCE(submitted_at, created_at)) AS d, COUNT(*) AS count
          FROM enrollments
-         WHERE submitted_at IS NOT NULL OR created_at IS NOT NULL
+         WHERE archived_at IS NULL AND (submitted_at IS NOT NULL OR created_at IS NOT NULL)
          GROUP BY DATE(COALESCE(submitted_at, created_at))
          ORDER BY d DESC
          LIMIT 30`
