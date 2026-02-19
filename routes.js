@@ -3,6 +3,7 @@ const router = express.Router();
 const uploadController = require('./upload');
 const db = require('./db');
 const { deleteObjectByKey } = require('./s3');
+const { put } = require('@vercel/blob');
 const { authenticate, requireAdmin } = require('./auth');
 const { body, validationResult } = require('express-validator');
 const authController = require('./authController');
@@ -298,7 +299,41 @@ router.put('/enrollment/submit', authenticate, async (req, res) => {
   }
 });
 
-// Documents CRUD (simple)
+// Documents: upload via Vercel Blob (preferred for file storage)
+router.post('/documents/blob-upload', authenticate, async (req, res) => {
+  try {
+    const pool = db.getPool();
+    const userId = req.user?.sub;
+    const { fileName, contentBase64, contentType } = req.body || {};
+    if (!userId || !fileName || !contentBase64 || !contentType) {
+      return res.status(400).json({ success: false, error: 'userId, fileName, contentBase64, and contentType are required' });
+    }
+
+    const buffer = Buffer.from(contentBase64, 'base64');
+    if (buffer.length > 50 * 1024 * 1024) {
+      return res.status(400).json({ success: false, error: 'file too large (max 50MB)' });
+    }
+
+    const key = `documents/${userId}/${Date.now()}_${fileName}`;
+    const blob = await put(key, buffer, {
+      access: 'private',
+      contentType,
+    });
+
+    const id = require('uuid').v4();
+    await pool.query(
+      'INSERT INTO documents (id,name,type,url,filePath,fileSize,userId,status,remarks,uploadedAt) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [id, fileName, 'document', blob.url, blob.pathname || blob.url, buffer.length, userId, 'pending', '', new Date()]
+    );
+
+    res.json({ success: true, data: { id, name: fileName, url: blob.url } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+// Documents metadata-only endpoint (legacy / S3)
 router.post('/documents', authenticate, async (req, res) => {
   try {
     const pool = db.getPool();
