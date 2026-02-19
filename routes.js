@@ -4,7 +4,6 @@ const uploadController = require('./upload');
 const db = require('./db');
 const { deleteObjectByKey } = require('./s3');
 const { authenticate, requireAdmin } = require('./auth');
-const { sendMail } = require('./email');
 const { body, validationResult } = require('express-validator');
 const authController = require('./authController');
 
@@ -475,6 +474,15 @@ router.patch('/admin/enrollments/:id/status', authenticate, requireAdmin, async 
 // Send email to student (registrar-managed: subject, body, optional attachment)
 router.post('/admin/enrollments/:id/send-email', authenticate, requireAdmin, async (req, res) => {
   try {
+    let sendMail;
+    try {
+      ({ sendMail } = require('./email'));
+    } catch (e) {
+      if (e.code === 'MODULE_NOT_FOUND' && e.message.includes('nodemailer')) {
+        return res.status(503).json({ success: false, error: 'Email not available. Add nodemailer to backend package.json and redeploy.' });
+      }
+      throw e;
+    }
     const pool = db.getPool();
     const [rows] = await pool.query(
       'SELECT e.user_id FROM enrollments e WHERE e.id = ? LIMIT 1',
