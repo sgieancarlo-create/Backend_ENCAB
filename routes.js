@@ -4,6 +4,7 @@ const uploadController = require('./upload');
 const db = require('./db');
 const { deleteObjectByKey } = require('./s3');
 const { authenticate, requireAdmin } = require('./auth');
+const { sendMail } = require('./email');
 const { body, validationResult } = require('express-validator');
 const authController = require('./authController');
 
@@ -467,6 +468,48 @@ router.patch('/admin/enrollments/:id/status', authenticate, requireAdmin, async 
     res.json({ success: true, data: { status } });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
+  }
+});
+
+// Send email to student (registrar-managed: subject, body, optional attachment)
+router.post('/admin/enrollments/:id/send-email', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const pool = db.getPool();
+    const [rows] = await pool.query(
+      'SELECT e.user_id FROM enrollments e WHERE e.id = ? LIMIT 1',
+      [req.params.id]
+    );
+    if (!rows || !rows[0]) return res.status(404).json({ success: false, error: 'Enrollment not found' });
+    const [userRows] = await pool.query('SELECT email FROM users WHERE id = ? LIMIT 1', [rows[0].user_id]);
+    const toEmail = userRows && userRows[0] && userRows[0].email;
+    if (!toEmail) return res.status(400).json({ success: false, error: 'Student email not found' });
+
+    const { type, subject, body } = req.body || {};
+    if (!subject || !body) return res.status(400).json({ success: false, error: 'subject and body are required' });
+
+    let attachment = null;
+    const attachmentBase64 = req.body.attachmentBase64;
+    const attachmentName = req.body.attachmentName;
+    if (attachmentBase64 && attachmentName) {
+      const buf = Buffer.from(attachmentBase64, 'base64');
+      if (buf.length > 10 * 1024 * 1024) return res.status(400).json({ success: false, error: 'Attachment too large (max 10MB)' });
+      attachment = { filename: attachmentName, content: buf };
+    }
+
+    await sendMail({
+      to: toEmail,
+      subject,
+      text: body,
+      html: body.replace(/\n/g, '<br>'),
+      attachment,
+    });
+    res.json({ success: true, data: { sent: true, to: toEmail } });
+  } catch (err) {
+    console.error(err);
+    if (err.message && err.message.includes('Gmail not configured')) {
+      return res.status(503).json({ success: false, error: 'Email not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD on the server.' });
+    }
     res.status(500).json({ success: false, error: String(err.message || err) });
   }
 });
